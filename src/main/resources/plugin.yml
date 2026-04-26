@@ -4,6 +4,7 @@ main: com.nullswan.cloudstorage.CloudStoragePlugin
 description: Infinite virtual item storage — /cloud or Cloud Block
 author: nullswan
 api-version: '1.21'
+softdepend: [AutoPickup]
 commands:
   cloud:
     description: Open your cloud storage

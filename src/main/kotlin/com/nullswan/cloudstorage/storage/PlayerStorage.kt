@@ -1,9 +1,11 @@
 package com.nullswan.cloudstorage.storage
 
 import org.bukkit.Material
+import org.bukkit.inventory.ItemStack
 import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
+import java.util.Base64
 import java.util.UUID
 
 class PlayerStorage(dataFolder: File) {
@@ -26,6 +28,15 @@ class PlayerStorage(dataFolder: File) {
                     material    TEXT NOT NULL,
                     amount      INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (player_uuid, material)
+                )
+                """.trimIndent()
+            )
+            stmt.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_unique_items (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_uuid  TEXT NOT NULL,
+                    item_data    TEXT NOT NULL
                 )
                 """.trimIndent()
             )
@@ -130,6 +141,52 @@ class PlayerStorage(dataFolder: File) {
             stmt.setInt(2, if (enabled) 1 else 0)
             stmt.executeUpdate()
         }
+    }
+
+    fun depositUnique(playerUuid: UUID, item: ItemStack) {
+        val data = Base64.getEncoder().encodeToString(item.serializeAsBytes())
+        connection.prepareStatement(
+            "INSERT INTO cloud_unique_items (player_uuid, item_data) VALUES (?, ?)"
+        ).use { stmt ->
+            stmt.setString(1, playerUuid.toString())
+            stmt.setString(2, data)
+            stmt.executeUpdate()
+        }
+    }
+
+    fun getAllUnique(playerUuid: UUID): List<Pair<Int, ItemStack>> {
+        val items = mutableListOf<Pair<Int, ItemStack>>()
+        connection.prepareStatement(
+            "SELECT id, item_data FROM cloud_unique_items WHERE player_uuid = ? ORDER BY id"
+        ).use { stmt ->
+            stmt.setString(1, playerUuid.toString())
+            val rs = stmt.executeQuery()
+            while (rs.next()) {
+                val id = rs.getInt("id")
+                val bytes = Base64.getDecoder().decode(rs.getString("item_data"))
+                items.add(id to ItemStack.deserializeBytes(bytes))
+            }
+        }
+        return items
+    }
+
+    fun withdrawUnique(playerUuid: UUID, id: Int): ItemStack? {
+        val item = connection.prepareStatement(
+            "SELECT item_data FROM cloud_unique_items WHERE id = ? AND player_uuid = ?"
+        ).use { stmt ->
+            stmt.setInt(1, id)
+            stmt.setString(2, playerUuid.toString())
+            val rs = stmt.executeQuery()
+            if (!rs.next()) return null
+            ItemStack.deserializeBytes(Base64.getDecoder().decode(rs.getString("item_data")))
+        }
+        connection.prepareStatement(
+            "DELETE FROM cloud_unique_items WHERE id = ?"
+        ).use { stmt ->
+            stmt.setInt(1, id)
+            stmt.executeUpdate()
+        }
+        return item
     }
 
     fun close() {

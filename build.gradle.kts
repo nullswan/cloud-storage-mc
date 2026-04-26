@@ -13,6 +13,7 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
+    compileOnly(files("../autopickup-mc/build/libs/autopickup-mc-1.0.0.jar"))
     implementation(kotlin("stdlib"))
 
     testImplementation(kotlin("test"))

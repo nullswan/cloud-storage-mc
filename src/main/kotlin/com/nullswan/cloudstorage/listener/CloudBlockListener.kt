@@ -7,6 +7,7 @@ import org.bukkit.GameMode
 import org.bukkit.Material
 import org.bukkit.Particle
 import org.bukkit.Sound
+import org.bukkit.block.Barrel
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
@@ -72,13 +73,20 @@ class CloudBlockListener(
 
     private fun spawnAmbientParticles() {
         for (player in plugin.server.onlinePlayers) {
-            val nearby = player.location.getNearbyEntities(16.0, 16.0, 16.0)
-            for (chunk in player.location.chunk.let { listOf(it) }) {
-                for (state in chunk.tileEntities) {
-                    if (state.block.type != Material.BARREL) continue
-                    if (!cloudBlock.isCloudBlock(state.block)) continue
-                    val loc = state.block.location.add(0.5, 1.1, 0.5)
-                    loc.world.spawnParticle(Particle.END_ROD, loc, 3, 0.2, 0.1, 0.2, 0.01)
+            val cx = player.location.blockX shr 4
+            val cz = player.location.blockZ shr 4
+            val world = player.world
+            for (dx in -1..1) {
+                for (dz in -1..1) {
+                    if (!world.isChunkLoaded(cx + dx, cz + dz)) continue
+                    val chunk = world.getChunkAt(cx + dx, cz + dz)
+                    for (state in chunk.tileEntities) {
+                        if (state !is Barrel) continue
+                        if (!state.persistentDataContainer.has(cloudBlock.pdcKey)) continue
+                        val loc = state.block.location.add(0.5, 1.2, 0.5)
+                        world.spawnParticle(Particle.SOUL_FIRE_FLAME, loc, 4, 0.25, 0.15, 0.25, 0.005)
+                        world.spawnParticle(Particle.ENCHANT, loc, 6, 0.3, 0.3, 0.3, 0.5)
+                    }
                 }
             }
         }

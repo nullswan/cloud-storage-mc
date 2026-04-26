@@ -1,6 +1,7 @@
 package com.nullswan.cloudstorage.listener
 
 import com.nullswan.cloudstorage.Constants
+import com.nullswan.cloudstorage.isStackableCloudItem
 import com.nullswan.cloudstorage.displayName
 import com.nullswan.cloudstorage.gui.CloudGUI
 import com.nullswan.cloudstorage.storage.PlayerStorage
@@ -13,10 +14,15 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryDragEvent
+import org.bukkit.event.player.AsyncPlayerChatEvent
 import org.bukkit.inventory.ItemStack
+import org.bukkit.plugin.Plugin
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
-class GUIListener(private val storage: PlayerStorage) : Listener {
+class GUIListener(private val storage: PlayerStorage, private val plugin: Plugin) : Listener {
+
+    private val pendingSearches = ConcurrentHashMap<UUID, CloudGUI>()
 
     @EventHandler
     fun onInventoryClick(event: InventoryClickEvent) {
@@ -40,6 +46,7 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
             CloudGUI.SLOT_AUTO_CLOUD -> toggleAutoCloud(player, gui)
             CloudGUI.SLOT_DEPOSIT_INV -> depositInventory(player, gui)
             CloudGUI.SLOT_DEPOSIT_HELD -> depositHeld(player, gui)
+            CloudGUI.SLOT_SEARCH -> handleSearch(player, gui)
             CloudGUI.SLOT_NEXT -> { gui.currentPage++; gui.refresh() }
         }
     }
@@ -54,7 +61,11 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         if (clicked.type.isAir) return
 
         val uuid = gui.storageUuid
-        storage.deposit(uuid, clicked.type, clicked.amount)
+        if (isStackableCloudItem(clicked)) {
+            storage.deposit(uuid, clicked.type, clicked.amount)
+        } else {
+            storage.depositUnique(uuid, clicked)
+        }
         player.sendActionBar(
             Component.text("Deposited ${clicked.amount} ${clicked.type.displayName()}", NamedTextColor.GREEN)
         )
@@ -64,14 +75,30 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
     }
 
     private fun handleItemClick(player: Player, gui: CloudGUI, slot: Int, shiftClick: Boolean) {
-        val displayItem = gui.inventory.getItem(slot) ?: return
-        val material = displayItem.type
+        val pageOffset = gui.currentPage * CloudGUI.ITEMS_PER_PAGE
+        val entryIndex = pageOffset + slot
+        if (entryIndex >= gui.displayEntries.size) return
+
         val uuid = gui.storageUuid
-
-        if (storage.getAmount(uuid, material) <= 0) return
-
-        val withdrawn = if (shiftClick) withdrawAll(player, uuid, material) else withdrawStack(player, uuid, material)
-        if (gui.shared && withdrawn > 0) notifySharedCloud(player, material, withdrawn, deposited = false)
+        when (val entry = gui.displayEntries[entryIndex]) {
+            is CloudGUI.DisplayEntry.Stackable -> {
+                if (storage.getAmount(uuid, entry.material) <= 0) return
+                val withdrawn = if (shiftClick) withdrawAll(player, uuid, entry.material) else withdrawStack(player, uuid, entry.material)
+                if (gui.shared && withdrawn > 0) notifySharedCloud(player, entry.material, withdrawn, deposited = false)
+            }
+            is CloudGUI.DisplayEntry.Unique -> {
+                val item = storage.withdrawUnique(uuid, entry.id) ?: return
+                val leftover = player.inventory.addItem(item)
+                if (leftover.isNotEmpty()) {
+                    for (overflow in leftover.values) {
+                        storage.depositUnique(uuid, overflow)
+                    }
+                } else {
+                    player.sendActionBar(Component.text("Withdrew ${item.type.displayName()}", NamedTextColor.AQUA))
+                    if (gui.shared) notifySharedCloud(player, item.type, 1, deposited = false)
+                }
+            }
+        }
         gui.refresh()
     }
 
@@ -120,7 +147,11 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         for (i in Constants.INVENTORY_SLOTS_START until Constants.INVENTORY_SLOTS_END) {
             val item = player.inventory.getItem(i) ?: continue
             if (!item.type.isItem || item.type.isAir) continue
-            storage.deposit(uuid, item.type, item.amount)
+            if (isStackableCloudItem(item)) {
+                storage.deposit(uuid, item.type, item.amount)
+            } else {
+                storage.depositUnique(uuid, item)
+            }
             deposited += item.amount
             player.inventory.setItem(i, null)
         }
@@ -135,13 +166,49 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         val item = player.inventory.itemInMainHand
         if (item.type.isAir) return
         val uuid = gui.storageUuid
-        storage.deposit(uuid, item.type, item.amount)
+        if (isStackableCloudItem(item)) {
+            storage.deposit(uuid, item.type, item.amount)
+        } else {
+            storage.depositUnique(uuid, item)
+        }
         player.sendActionBar(
             Component.text("Deposited ${item.amount} ${item.type.displayName()}", NamedTextColor.GREEN)
         )
         if (gui.shared) notifySharedCloud(player, item.type, item.amount, deposited = true)
         player.inventory.setItemInMainHand(null)
         gui.refresh()
+    }
+
+    private fun handleSearch(player: Player, gui: CloudGUI) {
+        if (gui.searchQuery != null) {
+            gui.searchQuery = null
+            gui.currentPage = 0
+            gui.refresh()
+            return
+        }
+
+        pendingSearches[player.uniqueId] = gui
+        player.closeInventory()
+        player.sendMessage(
+            Component.text("Type your search query in chat ", NamedTextColor.AQUA)
+                .append(Component.text("(or 'cancel' to cancel)", NamedTextColor.GRAY))
+        )
+    }
+
+    @EventHandler
+    fun onChat(event: AsyncPlayerChatEvent) {
+        val gui = pendingSearches.remove(event.player.uniqueId) ?: return
+        event.isCancelled = true
+
+        val query = event.message.trim()
+        if (query.equals("cancel", ignoreCase = true)) {
+            plugin.server.scheduler.runTask(plugin, Runnable { gui.open() })
+            return
+        }
+
+        gui.searchQuery = query
+        gui.currentPage = 0
+        plugin.server.scheduler.runTask(plugin, Runnable { gui.open() })
     }
 
     private fun notifySharedCloud(actor: Player, material: Material?, amount: Int, deposited: Boolean) {
