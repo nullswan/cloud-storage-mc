@@ -6,6 +6,7 @@ import com.nullswan.cloudstorage.gui.CloudGUI
 import com.nullswan.cloudstorage.storage.PlayerStorage
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
+import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -24,7 +25,13 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
 
         val player = event.whoClicked as? Player ?: return
         val slot = event.rawSlot
-        if (slot < 0 || slot >= Constants.INVENTORY_SIZE) return
+
+        if (slot < 0) return
+
+        if (slot >= Constants.INVENTORY_SIZE) {
+            depositClickedItem(player, gui, event)
+            return
+        }
 
         when (slot) {
             in 0 until CloudGUI.ITEMS_PER_PAGE -> handleItemClick(player, gui, slot, event.isShiftClick)
@@ -42,6 +49,20 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         if (event.inventory.holder is CloudGUI) event.isCancelled = true
     }
 
+    private fun depositClickedItem(player: Player, gui: CloudGUI, event: InventoryClickEvent) {
+        val clicked = event.currentItem ?: return
+        if (clicked.type.isAir) return
+
+        val uuid = gui.storageUuid
+        storage.deposit(uuid, clicked.type, clicked.amount)
+        player.sendActionBar(
+            Component.text("Deposited ${clicked.amount} ${clicked.type.displayName()}", NamedTextColor.GREEN)
+        )
+        event.currentItem = null
+        if (gui.shared) notifySharedCloud(player, clicked.type, clicked.amount, deposited = true)
+        gui.refresh()
+    }
+
     private fun handleItemClick(player: Player, gui: CloudGUI, slot: Int, shiftClick: Boolean) {
         val displayItem = gui.inventory.getItem(slot) ?: return
         val material = displayItem.type
@@ -49,23 +70,27 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
 
         if (storage.getAmount(uuid, material) <= 0) return
 
-        if (shiftClick) withdrawAll(player, uuid, material) else withdrawStack(player, uuid, material)
+        val withdrawn = if (shiftClick) withdrawAll(player, uuid, material) else withdrawStack(player, uuid, material)
+        if (gui.shared && withdrawn > 0) notifySharedCloud(player, material, withdrawn, deposited = false)
         gui.refresh()
     }
 
-    private fun withdrawStack(player: Player, uuid: UUID, material: Material) {
+    private fun withdrawStack(player: Player, uuid: UUID, material: Material): Int {
         val stored = storage.getAmount(uuid, material)
         val stackSize = material.maxStackSize.toLong().coerceAtMost(stored).toInt()
         val actual = storage.withdraw(uuid, material, stackSize)
-        if (actual <= 0) return
+        if (actual <= 0) return 0
 
         val leftover = player.inventory.addItem(ItemStack(material, actual))
         if (leftover.isNotEmpty()) {
-            storage.deposit(uuid, material, leftover.values.sumOf { it.amount })
+            val returned = leftover.values.sumOf { it.amount }
+            storage.deposit(uuid, material, returned)
+            return actual - returned
         }
+        return actual
     }
 
-    private fun withdrawAll(player: Player, uuid: UUID, material: Material) {
+    private fun withdrawAll(player: Player, uuid: UUID, material: Material): Int {
         var total = 0
         while (player.inventory.firstEmpty() != -1) {
             val remaining = storage.getAmount(uuid, material)
@@ -78,6 +103,7 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         if (total > 0) {
             player.sendActionBar(Component.text("Withdrew $total ${material.displayName()}", NamedTextColor.AQUA))
         }
+        return total
     }
 
     private fun toggleAutoCloud(player: Player, gui: CloudGUI) {
@@ -100,6 +126,7 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         }
         if (deposited > 0) {
             player.sendActionBar(Component.text("Deposited $deposited items", NamedTextColor.GREEN))
+            if (gui.shared) notifySharedCloud(player, null, deposited, deposited = true)
         }
         gui.refresh()
     }
@@ -112,7 +139,21 @@ class GUIListener(private val storage: PlayerStorage) : Listener {
         player.sendActionBar(
             Component.text("Deposited ${item.amount} ${item.type.displayName()}", NamedTextColor.GREEN)
         )
+        if (gui.shared) notifySharedCloud(player, item.type, item.amount, deposited = true)
         player.inventory.setItemInMainHand(null)
         gui.refresh()
+    }
+
+    private fun notifySharedCloud(actor: Player, material: Material?, amount: Int, deposited: Boolean) {
+        val action = if (deposited) "deposited" else "withdrew"
+        val itemDesc = if (material != null) "$amount ${material.displayName()}" else "$amount items"
+        val msg = Component.text("[Shared Cloud] ", NamedTextColor.GOLD)
+            .append(Component.text("${actor.name} $action $itemDesc", NamedTextColor.GRAY))
+
+        for (player in Bukkit.getOnlinePlayers()) {
+            if (player.uniqueId != actor.uniqueId) {
+                player.sendMessage(msg)
+            }
+        }
     }
 }

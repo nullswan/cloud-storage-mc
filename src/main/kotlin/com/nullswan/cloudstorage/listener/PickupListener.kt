@@ -10,7 +10,9 @@ import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.EventPriority
 import org.bukkit.event.Listener
+import org.bukkit.event.block.BlockDropItemEvent
 import org.bukkit.event.entity.EntityPickupItemEvent
+import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -22,7 +24,7 @@ class PickupListener(
 
     private class PickupBatch {
         val items = mutableMapOf<Material, Int>()
-        var cloudItems = mutableMapOf<Material, Int>()
+        val cloudItems = mutableMapOf<Material, Int>()
         var lastUpdate = System.currentTimeMillis()
     }
 
@@ -34,7 +36,35 @@ class PickupListener(
     }
 
     @EventHandler(priority = EventPriority.HIGH)
-    fun onPickup(event: EntityPickupItemEvent) {
+    fun onBlockDrop(event: BlockDropItemEvent) {
+        val player = event.player
+        val items = event.items.toList()
+
+        for (drop in items) {
+            val itemStack = drop.itemStack
+            if (itemStack.type.isAir) continue
+
+            val leftover = player.inventory.addItem(itemStack)
+            if (leftover.isEmpty()) {
+                record(player, itemStack.type, itemStack.amount, cloud = false)
+            } else {
+                val added = itemStack.amount - leftover.values.sumOf { it.amount }
+                if (added > 0) record(player, itemStack.type, added, cloud = false)
+
+                if (storage.isAutoCloudEnabled(player.uniqueId)) {
+                    val overflow = leftover.values.sumOf { it.amount }
+                    storage.deposit(player.uniqueId, itemStack.type, overflow)
+                    record(player, itemStack.type, overflow, cloud = true)
+                } else {
+                    continue
+                }
+            }
+            event.items.remove(drop)
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGH)
+    fun onEntityPickup(event: EntityPickupItemEvent) {
         val player = event.entity as? Player ?: return
         val itemStack = event.item.itemStack
         if (itemStack.type.isAir) return
@@ -46,18 +76,20 @@ class PickupListener(
             event.isCancelled = true
             storage.deposit(player.uniqueId, itemStack.type, itemStack.amount)
             event.item.remove()
-
-            val batch = batches.computeIfAbsent(player.uniqueId) { PickupBatch() }
-            batch.cloudItems.merge(itemStack.type, itemStack.amount, Int::plus)
-            batch.lastUpdate = System.currentTimeMillis()
+            record(player, itemStack.type, itemStack.amount, cloud = true)
             return
         }
 
         if (!event.isCancelled) {
-            val batch = batches.computeIfAbsent(player.uniqueId) { PickupBatch() }
-            batch.items.merge(itemStack.type, itemStack.amount, Int::plus)
-            batch.lastUpdate = System.currentTimeMillis()
+            record(player, itemStack.type, itemStack.amount, cloud = false)
         }
+    }
+
+    private fun record(player: Player, material: Material, amount: Int, cloud: Boolean) {
+        val batch = batches.computeIfAbsent(player.uniqueId) { PickupBatch() }
+        val target = if (cloud) batch.cloudItems else batch.items
+        target.merge(material, amount, Int::plus)
+        batch.lastUpdate = System.currentTimeMillis()
     }
 
     private fun flush() {
@@ -70,21 +102,21 @@ class PickupListener(
 
             val player = plugin.server.getPlayer(uuid) ?: continue
 
-            val cloudTop = batch.cloudItems.maxByOrNull { it.value }
-            if (cloudTop != null) {
-                val extra = batch.cloudItems.size - 1
-                val suffix = if (extra > 0) " (+$extra more)" else ""
-                player.sendActionBar(
-                    Component.text("☁ + ${cloudTop.value} ${cloudTop.key.displayName()}$suffix", NamedTextColor.AQUA)
-                )
-                return
-            }
+            val allItems = batch.items.toMutableMap()
+            batch.cloudItems.forEach { (mat, amt) -> allItems.merge(mat, amt, Int::plus) }
+            val top = allItems.maxByOrNull { it.value } ?: continue
 
-            val top = batch.items.maxByOrNull { it.value } ?: continue
-            val extra = batch.items.size - 1
+            val cloudTotal = batch.cloudItems.values.sum()
+            val extra = allItems.size - 1
             val suffix = if (extra > 0) " (+$extra more)" else ""
+
+            val (prefix, color) = if (cloudTotal > 0)
+                "☁ +" to NamedTextColor.AQUA
+            else
+                "+" to NamedTextColor.GREEN
+
             player.sendActionBar(
-                Component.text("+ ${top.value} ${top.key.displayName()}$suffix", NamedTextColor.GREEN)
+                Component.text("$prefix ${top.value} ${top.key.displayName()}$suffix", color)
             )
         }
     }

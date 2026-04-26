@@ -22,7 +22,7 @@ class CloudStoragePlugin : JavaPlugin() {
 
         val pm = server.pluginManager
         pm.registerEvents(GUIListener(storage), this)
-        pm.registerEvents(CloudBlockListener(cloudBlock, storage), this)
+        pm.registerEvents(CloudBlockListener(this, cloudBlock, storage), this)
         pm.registerEvents(PickupListener(this, storage), this)
 
         logger.info("CloudStorage enabled — /cloud or craft a Cloud Block (chest + diamond)")
