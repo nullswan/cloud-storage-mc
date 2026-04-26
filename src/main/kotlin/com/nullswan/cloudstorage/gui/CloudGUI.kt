@@ -1,5 +1,6 @@
 package com.nullswan.cloudstorage.gui
 
+import com.nullswan.cloudstorage.styledText
 import com.nullswan.cloudstorage.storage.PlayerStorage
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
@@ -11,52 +12,70 @@ import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryHolder
 import org.bukkit.inventory.ItemStack
 import java.text.NumberFormat
+import java.util.UUID
 
 class CloudGUI(
-    private val player: Player,
+    val player: Player,
     private val storage: PlayerStorage,
-    var currentPage: Int = 0
+    var currentPage: Int = 0,
+    var shared: Boolean = false
 ) : InventoryHolder {
 
-    private val inv: Inventory = Bukkit.createInventory(
-        this, 54,
-        Component.text("☁ Cloud Storage", NamedTextColor.LIGHT_PURPLE)
-    )
+    companion object {
+        const val ITEMS_PER_PAGE = 45
+        const val SLOT_PREV = 45
+        const val SLOT_TOGGLE = 46
+        const val SLOT_AUTO_CLOUD = 47
+        const val SLOT_DEPOSIT_INV = 48
+        const val SLOT_DEPOSIT_HELD = 49
+        const val SLOT_INFO = 50
+        const val SLOT_NEXT = 53
+    }
 
-    val itemsPerPage = 45
+    private var inv: Inventory = createInventory()
+
+    val storageUuid: UUID
+        get() = if (shared) PlayerStorage.SHARED_UUID else player.uniqueId
+
+    private fun createInventory(): Inventory {
+        val title = if (shared)
+            Component.text("☁ Shared Cloud", NamedTextColor.GOLD)
+        else
+            Component.text("☁ Cloud Storage", NamedTextColor.LIGHT_PURPLE)
+        return Bukkit.createInventory(this, 54, title)
+    }
 
     fun open() {
         refresh()
         player.openInventory(inv)
     }
 
+    fun reopen() {
+        inv = createInventory()
+        refresh()
+        player.openInventory(inv)
+    }
+
     fun refresh() {
         inv.clear()
-        val allItems = storage.getAll(player.uniqueId).entries.toList()
-        val totalPages = ((allItems.size - 1) / itemsPerPage).coerceAtLeast(0)
+        val allItems = storage.getAll(storageUuid).entries.toList()
+        val totalPages = ((allItems.size - 1) / ITEMS_PER_PAGE).coerceAtLeast(0)
         currentPage = currentPage.coerceIn(0, totalPages)
 
-        val pageItems = allItems.drop(currentPage * itemsPerPage).take(itemsPerPage)
         val fmt = NumberFormat.getIntegerInstance()
-
-        for ((index, entry) in pageItems.withIndex()) {
-            val (material, amount) = entry
-            val item = ItemStack(material, 1)
-            val meta = item.itemMeta ?: continue
-            meta.lore(
-                listOf(
-                    Component.text("Amount: ${fmt.format(amount)}", NamedTextColor.AQUA)
-                        .decoration(TextDecoration.ITALIC, false),
-                    Component.empty(),
-                    Component.text("Left-click: withdraw stack", NamedTextColor.GRAY)
-                        .decoration(TextDecoration.ITALIC, false),
-                    Component.text("Shift-click: withdraw all", NamedTextColor.GRAY)
-                        .decoration(TextDecoration.ITALIC, false)
-                )
-            )
-            item.itemMeta = meta
-            inv.setItem(index, item)
-        }
+        allItems.drop(currentPage * ITEMS_PER_PAGE).take(ITEMS_PER_PAGE)
+            .forEachIndexed { index, (material, amount) ->
+                inv.setItem(index, ItemStack(material, 1).apply {
+                    editMeta { meta ->
+                        meta.lore(listOf(
+                            styledText("Amount: ${fmt.format(amount)}", NamedTextColor.AQUA),
+                            Component.empty(),
+                            styledText("Left-click: withdraw stack", NamedTextColor.GRAY),
+                            styledText("Shift-click: withdraw all", NamedTextColor.GRAY)
+                        ))
+                    }
+                })
+            }
 
         fillNavBar(currentPage, totalPages, allItems.size)
     }
@@ -67,42 +86,38 @@ class CloudGUI(
         }
         for (slot in 45..53) inv.setItem(slot, filler)
 
-        if (page > 0) {
-            inv.setItem(45, navItem(Material.ARROW, "◀ Previous Page", NamedTextColor.YELLOW))
-        }
-        if (page < totalPages) {
-            inv.setItem(53, navItem(Material.ARROW, "Next Page ▶", NamedTextColor.YELLOW))
-        }
+        if (page > 0) inv.setItem(SLOT_PREV, navItem(Material.ARROW, "◀ Previous Page", NamedTextColor.YELLOW))
+        if (page < totalPages) inv.setItem(SLOT_NEXT, navItem(Material.ARROW, "Next Page ▶", NamedTextColor.YELLOW))
 
-        inv.setItem(48, navItem(Material.HOPPER, "Deposit Inventory", NamedTextColor.GREEN))
-        inv.setItem(49, navItem(Material.CHEST, "Deposit Held Item", NamedTextColor.GREEN))
+        val (toggleName, toggleColor, toggleMat) = if (shared)
+            Triple("Switch to Personal", NamedTextColor.LIGHT_PURPLE, Material.ENDER_CHEST)
+        else
+            Triple("Switch to Shared", NamedTextColor.GOLD, Material.ENDER_EYE)
+        inv.setItem(SLOT_TOGGLE, navItem(toggleMat, toggleName, toggleColor))
 
-        val infoItem = ItemStack(Material.BOOK, 1).apply {
+        val autoCloud = storage.isAutoCloudEnabled(player.uniqueId)
+        val (autoName, autoColor, autoMat) = if (autoCloud)
+            Triple("Auto-Cloud: ON", NamedTextColor.GREEN, Material.LIME_DYE)
+        else
+            Triple("Auto-Cloud: OFF", NamedTextColor.RED, Material.GRAY_DYE)
+        inv.setItem(SLOT_AUTO_CLOUD, navItem(autoMat, autoName, autoColor))
+
+        inv.setItem(SLOT_DEPOSIT_INV, navItem(Material.HOPPER, "Deposit Inventory", NamedTextColor.GREEN))
+        inv.setItem(SLOT_DEPOSIT_HELD, navItem(Material.CHEST, "Deposit Held Item", NamedTextColor.GREEN))
+
+        val modeLabel = if (shared) "Shared" else "Personal"
+        inv.setItem(SLOT_INFO, ItemStack(Material.BOOK, 1).apply {
             editMeta { meta ->
-                meta.displayName(
-                    Component.text("Page ${page + 1}/${totalPages + 1}", NamedTextColor.WHITE)
-                        .decoration(TextDecoration.ITALIC, false)
-                )
-                meta.lore(
-                    listOf(
-                        Component.text("$totalItems item types stored", NamedTextColor.GRAY)
-                            .decoration(TextDecoration.ITALIC, false)
-                    )
-                )
+                meta.displayName(styledText("$modeLabel — Page ${page + 1}/${totalPages + 1}", NamedTextColor.WHITE))
+                meta.lore(listOf(styledText("$totalItems item types stored", NamedTextColor.GRAY)))
             }
-        }
-        inv.setItem(50, infoItem)
+        })
     }
 
-    private fun navItem(material: Material, name: String, color: NamedTextColor): ItemStack {
-        return ItemStack(material, 1).apply {
-            editMeta { meta ->
-                meta.displayName(
-                    Component.text(name, color).decoration(TextDecoration.ITALIC, false)
-                )
-            }
+    private fun navItem(material: Material, name: String, color: NamedTextColor): ItemStack =
+        ItemStack(material, 1).apply {
+            editMeta { it.displayName(styledText(name, color)) }
         }
-    }
 
     override fun getInventory(): Inventory = inv
 }

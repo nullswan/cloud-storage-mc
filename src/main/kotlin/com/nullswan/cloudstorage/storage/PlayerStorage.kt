@@ -8,22 +8,36 @@ import java.util.UUID
 
 class PlayerStorage(dataFolder: File) {
 
+    companion object {
+        val SHARED_UUID: UUID = UUID(0L, 0L)
+    }
+
     private val connection: Connection
 
     init {
         dataFolder.mkdirs()
         val dbFile = File(dataFolder, "storage.db")
         connection = DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}")
-        connection.createStatement().execute(
-            """
-            CREATE TABLE IF NOT EXISTS cloud_items (
-                player_uuid TEXT NOT NULL,
-                material    TEXT NOT NULL,
-                amount      INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (player_uuid, material)
+        connection.createStatement().use { stmt ->
+            stmt.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cloud_items (
+                    player_uuid TEXT NOT NULL,
+                    material    TEXT NOT NULL,
+                    amount      INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (player_uuid, material)
+                )
+                """.trimIndent()
             )
-            """.trimIndent()
-        )
+            stmt.execute(
+                """
+                CREATE TABLE IF NOT EXISTS player_settings (
+                    player_uuid  TEXT NOT NULL PRIMARY KEY,
+                    auto_cloud   INTEGER NOT NULL DEFAULT 1
+                )
+                """.trimIndent()
+            )
+        }
     }
 
     fun deposit(playerUuid: UUID, material: Material, amount: Int) {
@@ -93,6 +107,29 @@ class PlayerStorage(dataFolder: File) {
             }
         }
         return items
+    }
+
+    fun isAutoCloudEnabled(playerUuid: UUID): Boolean {
+        connection.prepareStatement(
+            "SELECT auto_cloud FROM player_settings WHERE player_uuid = ?"
+        ).use { stmt ->
+            stmt.setString(1, playerUuid.toString())
+            val rs = stmt.executeQuery()
+            return if (rs.next()) rs.getInt("auto_cloud") == 1 else true
+        }
+    }
+
+    fun setAutoCloud(playerUuid: UUID, enabled: Boolean) {
+        connection.prepareStatement(
+            """
+            INSERT INTO player_settings (player_uuid, auto_cloud) VALUES (?, ?)
+            ON CONFLICT(player_uuid) DO UPDATE SET auto_cloud = excluded.auto_cloud
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, playerUuid.toString())
+            stmt.setInt(2, if (enabled) 1 else 0)
+            stmt.executeUpdate()
+        }
     }
 
     fun close() {

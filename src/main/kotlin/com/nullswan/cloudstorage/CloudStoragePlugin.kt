@@ -20,15 +20,15 @@ class CloudStoragePlugin : JavaPlugin() {
 
         getCommand("cloud")?.setExecutor(CloudCommand(storage))
 
-        server.pluginManager.registerEvents(GUIListener(storage), this)
-        server.pluginManager.registerEvents(CloudBlockListener(cloudBlock, storage), this)
-        server.pluginManager.registerEvents(PickupListener(this), this)
+        val pm = server.pluginManager
+        pm.registerEvents(GUIListener(storage), this)
+        pm.registerEvents(CloudBlockListener(cloudBlock, storage), this)
+        pm.registerEvents(PickupListener(this, storage), this)
 
         logger.info("CloudStorage enabled — /cloud or craft a Cloud Block (chest + diamond)")
     }
 
     override fun onDisable() {
         if (::storage.isInitialized) storage.close()
-        logger.info("CloudStorage disabled")
     }
 }
