@@ -20,7 +20,8 @@ import org.bukkit.plugin.Plugin
 class CloudBlockListener(
     private val plugin: Plugin,
     private val cloudBlock: CloudBlock,
-    private val storage: PlayerStorage
+    private val storage: PlayerStorage,
+    private val debug: Boolean
 ) : Listener {
 
     init {
@@ -36,6 +37,8 @@ class CloudBlockListener(
         val loc = event.blockPlaced.location.add(0.5, 1.0, 0.5)
         loc.world.playSound(loc, Sound.BLOCK_BEACON_ACTIVATE, 0.5f, 1.5f)
         loc.world.spawnParticle(Particle.END_ROD, loc, 20, 0.3, 0.3, 0.3, 0.02)
+
+        if (debug) plugin.logger.info("[Cloud] block placed by ${event.player.name} @${event.blockPlaced.location.toVector()}")
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -51,6 +54,7 @@ class CloudBlockListener(
         loc.world.playSound(loc, Sound.BLOCK_ENDER_CHEST_OPEN, 0.6f, 1.2f)
         loc.world.spawnParticle(Particle.PORTAL, loc, 15, 0.3, 0.3, 0.3, 0.5)
 
+        if (debug) plugin.logger.info("[Cloud] block opened by ${event.player.name} @${block.location.toVector()}")
         CloudGUI(event.player, storage).open()
     }
 
@@ -69,6 +73,8 @@ class CloudBlockListener(
         if (event.player.gameMode != GameMode.CREATIVE) {
             block.world.dropItemNaturally(block.location, cloudBlock.createItem())
         }
+
+        if (debug) plugin.logger.info("[Cloud] block broken by ${event.player.name} @${block.location.toVector()} (creative=${event.player.gameMode == GameMode.CREATIVE})")
     }
 
     private fun spawnAmbientParticles() {

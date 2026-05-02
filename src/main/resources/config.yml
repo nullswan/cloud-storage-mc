@@ -1,0 +1,5 @@
+# CloudStorage
+
+# Emit verbose logs for /cloud, Cloud Block interactions, and overflow events.
+# Off by default.
+debug: false
